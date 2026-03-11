@@ -4,7 +4,7 @@
 
 set -e
 
-VENV_DIR=".venv"
+VENV_DIR="venv"
 
 echo "Creating Python virtual environment in '${VENV_DIR}'..."
 python3 -m venv "${VENV_DIR}"
