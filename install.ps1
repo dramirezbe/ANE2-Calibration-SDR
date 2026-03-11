@@ -3,7 +3,7 @@
 
 $ErrorActionPreference = "Stop"
 
-$VenvDir = ".venv"
+$VenvDir = "venv"
 
 Write-Host "Creating Python virtual environment in '$VenvDir'..."
 python -m venv $VenvDir
@@ -19,4 +19,4 @@ pip install -r requirements.txt
 
 Write-Host ""
 Write-Host "Setup complete. Activate the environment with:"
-Write-Host "  .\.venv\Scripts\Activate.ps1"
+Write-Host "  .\venv\Scripts\Activate.ps1"

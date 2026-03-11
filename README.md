@@ -1,6 +1,6 @@
 # ANE2-Calibration-SDR
 
-> Python toolkit for calibrating and monitoring a distributed network of Software Defined Radio (SDR) sensors managed by **ANE** (Agencia Nacional del Espectro – Colombia). It pulls real-time and historical RF measurement data from the ANE Remote Spectrum Monitoring (RSM) REST API, organises it in pandas DataFrames, and exposes it through Jupyter notebooks for interactive analysis.
+> Python toolkit for calibrating and monitoring a distributed network of Software Defined Radio (SDR) sensors for **ANE** (Agencia Nacional del Espectro – Colombia). It pulls real-time and historical RF measurement data from the ANE Remote Spectrum Monitoring (RSM) REST API, organises it in pandas DataFrames, and exposes it through Jupyter notebooks for interactive analysis.
 
 **Version:** 0.1.0
 
@@ -94,12 +94,12 @@ source venv/bin/activate        # activate the virtual environment
 git clone https://github.com/dramirezbe/ANE2-Calibration-SDR.git
 cd ANE2-Calibration-SDR
 .\install.ps1                   # creates .venv\, installs deps
-.\.venv\Scripts\Activate.ps1    # activate the virtual environment
+.\venv\Scripts\Activate.ps1    # activate the virtual environment
 ```
 
 Both scripts perform the same steps:
 
-1. Create a Python virtual environment (`venv/` on Linux, `.venv/` on Windows).
+1. Create a Python virtual environment (`venv/` on Linux and Windows).
 2. Upgrade `pip`.
 3. Install the packages listed in `requirements.txt`.
 
