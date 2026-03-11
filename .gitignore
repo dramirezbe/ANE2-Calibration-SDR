@@ -144,6 +144,9 @@ ENV/
 env.bak/
 venv.bak/
 
+# Project virtual environment (created by install.sh / install.ps1)
+.venv/
+
 # Spyder project settings
 .spyderproject
 .spyproject
