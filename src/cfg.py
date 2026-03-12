@@ -74,6 +74,9 @@ def set_logger() -> logging.Logger:
 
 log = set_logger()
 
+#Always exec when cfg is imported:
+log.info(f"Starting {APP_NAME} v{APP_VERSION} in {COUNTRY}...")
+
 # ==========================================
 # 3. SYSTEM DIAGNOSTICS (Main Log)
 # ==========================================

@@ -3,6 +3,8 @@ import pandas as pd
 import numpy as np
 from dataclasses import dataclass
 from tqdm import tqdm
+import redis
+import pickle
 from requests.packages.urllib3.exceptions import InsecureRequestWarning
 
 requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
@@ -43,6 +45,9 @@ class DataRequest:
     """
     def __init__(self, log=None,base_url="https://rsm.ane.gov.co:12443/api"):
         self.base_url = base_url
+
+        # Initialize Redis connection (assumes local default setup)
+        self.cache = redis.Redis(host='localhost', port=6379, db=0)
 
         if not log:
             import logging
@@ -180,15 +185,27 @@ class DataRequest:
         self._log.info(f"Loading data for campaigns: {list(campaigns.keys())} and nodes: {node_ids}")
         df_full = {camp: {} for camp in campaigns}
         
-        # Removed tqdm here to prevent nesting bugs in Jupyter
         for camp, camp_id in campaigns.items():
             print(f"\n🚀 Starting Campaign: {camp}")
             for node_id in node_ids:
                 mac = self.node_macs.get(node_id)
-                if mac:
+                if not mac:
+                    continue
+
+                # Define a unique key for Redis
+                cache_key = f"campaign_{camp_id}_node_{node_id}"
+                cached_data = self.cache.get(cache_key)
+
+                if cached_data:
+                    print(f"  ↳ Node {node_id} loaded instantly from RAM (Redis)")
+                    df_full[camp][f"Node{node_id}"] = pickle.loads(cached_data)
+                else:
                     datos = self.get_api_signals(mac, camp_id, node_desc=f"Node {node_id}")
                     if datos:
-                        df_full[camp][f"Node{node_id}"] = pd.DataFrame(datos).dropna(subset=['pxx'])
+                        df = pd.DataFrame(datos).dropna(subset=['pxx'])
+                        df_full[camp][f"Node{node_id}"] = df
+                        # Save the DataFrame to Redis for future runs
+                        self.cache.set(cache_key, pickle.dumps(df))
                         
         self._log.info("Finished loading data for all campaigns and nodes.")
         return df_full
