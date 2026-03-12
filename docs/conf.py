@@ -4,12 +4,12 @@
 import os
 import sys
 
-sys.path.insert(0, os.path.abspath(".."))
+sys.path.insert(0, os.path.abspath("../src"))
 
 # -- Project information -----------------------------------------------------
 project = "ANE2-Calibration-SDR"
-copyright = "2026, ANE2 Team"
-author = "ANE2 Team"
+copyright = "2026, GCPDS Team"
+author = "GCPDS Team"
 release = "0.1.0"
 
 # -- General configuration ---------------------------------------------------

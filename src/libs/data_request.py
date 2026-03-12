@@ -32,6 +32,7 @@ class CampaignParams:
     name: str
     schedule: ScheduleParams
     config: ConfigParams
+    pxx_len: int
 
 class DataRequest:
     """Handles data requests from the API.
@@ -96,34 +97,74 @@ class DataRequest:
         url = f"{self.base_url}/campaigns/{campaign_id}/parameters"
         data = requests.get(url, verify=False).json()
         
+        config_data = data.get("config", {})
+        
+        # --- Calculate pxx_len ---
+        # 1. Safely parse RBW (it comes in as a string according to your logs)
+        try:
+            rbw_val = float(config_data.get("rbw", 1000.0))
+            safe_rbw = rbw_val if rbw_val > 0 else 1000.0
+        except (ValueError, TypeError):
+            safe_rbw = 1000.0
+            
+        # 2. Get sample rate
+        sample_rate = float(config_data.get("sample_rate_hz", 0.0))
+        
+        # 3. Apply the C-formula logic
+        if sample_rate > 0:
+            enbw_factor = 1.363 # HAMMING_TYPE
+            required_nperseg_val = enbw_factor * sample_rate / safe_rbw
+            exponent = int(np.ceil(np.log2(required_nperseg_val)))
+            pxx_len = int(2 ** exponent)
+        else:
+            pxx_len = 0 # Fallback if no sample rate is provided
+        # -------------------------
+
         # Unpack dictionaries directly into the new dataclasses
         return CampaignParams(
             name=data.get("name"),
             schedule=ScheduleParams(**data.get("schedule", {})),
-            config=ConfigParams(**data.get("config", {}))
+            config=ConfigParams(**config_data),
+            pxx_len=pxx_len
         )
 
-    def get_api_signals(self, mac, camp_id):
-        """Downloads all signal measurements for a MAC and campaign using pagination.
-        
-        Args:
-            mac (str): MAC address of the sensor.
-            camp_id (int): Campaign ID.
-            
-        Returns:
-            list: List of raw measurement dictionaries.
+    def get_api_signals(self, mac, camp_id, node_desc):
         """
-        #self._log.info(f"Starting signal download for MAC {mac}, Campaign {camp_id}")
+        Fetches signal measurements for a given sensor MAC address and campaign ID, handling pagination.
+        Args:
+            mac (str): The MAC address of the sensor.
+            camp_id (int): The campaign ID to filter signals.
+            node_desc (str): Description of the node for logging purposes.
+        Returns:
+            list: A list of signal measurements retrieved from the API.
+        """
         url = f"{self.base_url}/campaigns/sensor/{mac}/signals"
-        params = {"campaign_id": camp_id, "page": 1, "page_size": 5000}
+        params = {"campaign_id": camp_id, "page": 1, "page_size": 1000}
         signals = []
-        while True:
-            data = requests.get(url, params=params, verify=False).json()
-            signals.extend(data['measurements'])
-            if not data.get('pagination', {}).get('has_next'):
-                break
-            params['page'] += 1
-        #self._log.info(f"Successfully downloaded {len(signals)} signals for MAC {mac}")
+        
+        # Single, flat progress bar that works everywhere
+        with tqdm(desc=f"  ↳ {node_desc}", unit="page", leave=True) as pbar:
+            while True:
+                try:
+                    response = requests.get(url, params=params, verify=False, timeout=20)
+                    data = response.json()
+                    
+                    measurements = data.get('measurements', [])
+                    if not measurements:
+                        break
+                        
+                    signals.extend(measurements)
+                    pbar.update(1)
+                    
+                    if not data.get('pagination', {}).get('has_next'):
+                        break
+                    
+                    params['page'] += 1
+                    
+                except Exception as e:
+                    print(f"\n  [!] Timeout/Error on {node_desc} (MAC {mac}): {e}")
+                    break 
+            
         return signals
 
     def load_campaigns_and_nodes(self, campaigns, node_ids):
@@ -137,13 +178,17 @@ class DataRequest:
             dict: Nested dictionary containing DataFrames of signals per campaign/node.
         """
         self._log.info(f"Loading data for campaigns: {list(campaigns.keys())} and nodes: {node_ids}")
-        df_full = {rbw: {} for rbw in campaigns}
-        for rbw, camp_id in tqdm(campaigns.items(), desc="Campaigns"):
-            for node_id in tqdm(node_ids, desc="Nodes", leave=False):
+        df_full = {camp: {} for camp in campaigns}
+        
+        # Removed tqdm here to prevent nesting bugs in Jupyter
+        for camp, camp_id in campaigns.items():
+            print(f"\n🚀 Starting Campaign: {camp}")
+            for node_id in node_ids:
                 mac = self.node_macs.get(node_id)
                 if mac:
-                    datos = self.get_api_signals(mac, camp_id)
+                    datos = self.get_api_signals(mac, camp_id, node_desc=f"Node {node_id}")
                     if datos:
-                        df_full[rbw][f"Node{node_id}"] = pd.DataFrame(datos).dropna(subset=['pxx'])
+                        df_full[camp][f"Node{node_id}"] = pd.DataFrame(datos).dropna(subset=['pxx'])
+                        
         self._log.info("Finished loading data for all campaigns and nodes.")
         return df_full
