@@ -1,4 +1,4 @@
-# ANE2-Calibration-SDR
+# SDRSystemCalibration
 
 > Python toolkit for calibrating and monitoring a distributed network of Software Defined Radio (SDR) sensors for **ANE** (Agencia Nacional del Espectro – Colombia). It pulls real-time and historical RF measurement data from the ANE Remote Spectrum Monitoring (RSM) REST API, organises it in pandas DataFrames, and exposes it through Jupyter notebooks for interactive analysis.
 
