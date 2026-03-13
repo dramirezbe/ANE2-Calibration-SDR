@@ -63,10 +63,15 @@ ANE2-Calibration-SDR/
 └── src/                               # Main source code
     ├── cfg.py                         # Configuration & logging setup
     ├── main.py                        # Application entry point
-    ├── example-realtime.ipynb         # Notebook: real-time signal monitoring
-    ├── example-campaign_nodes.ipynb   # Notebook: campaign data analysis
+    ├── example-node-realtime.ipynb    # Notebook: real-time monitoring example
+    ├── example-params-campaign.ipynb  # Notebook: campaign parameters example
+    ├── one-campaign-analysis.ipynb    # Notebook: one campaign analysis
+    ├── multiple-campaign-analysis.ipynb # Notebook: multi-campaign analysis
+    ├── plot-one-node.ipynb            # Notebook: visualize one node
+    ├── plot-each-node.ipynb           # Notebook: visualize each node
     └── libs/                          # Reusable library modules
         ├── __init__.py                # Package marker
+        ├── analyzers.py               # Signal stability analysis tools
         └── data_request.py            # API client & data structures
 ```
 
@@ -93,7 +98,7 @@ source venv/bin/activate        # activate the virtual environment
 ```powershell
 git clone https://github.com/dramirezbe/ANE2-Calibration-SDR.git
 cd ANE2-Calibration-SDR
-.\install.ps1                   # creates .venv\, installs deps
+.\install.ps1                   # creates venv\, installs deps
 .\venv\Scripts\Activate.ps1    # activate the virtual environment
 ```
 
@@ -115,7 +120,7 @@ python main.py
 ```bash
 cd src
 jupyter notebook
-# Open example-realtime.ipynb or example-campaign_nodes.ipynb
+# Open example-node-realtime.ipynb or example-params-campaign.ipynb
 ```
 
 ---
@@ -255,7 +260,7 @@ This prints a diagnostics report showing paths, flags, and network settings – 
    │  • Node ↔ MAC address mapping (10 nodes)        │
    │  • get_realtime_signal(node_id)                  │
    │  • get_campaign_params(campaign_id)              │
-   │  • get_api_signals(mac, camp_id)                 │
+    │  • get_api_signals(mac, camp_id, node_desc)      │
    │  • load_campaigns_and_nodes(campaigns, node_ids) │
    └──────────────────────┬───────────────────────────┘
                           │  HTTP (requests, verify=False)
@@ -282,7 +287,6 @@ log = cfg.set_logger()
 from libs.data_request import DataRequest
 
 def main():
-    log.info(f"Starting {cfg.APP_NAME} v{cfg.APP_VERSION} in {cfg.COUNTRY}...")
     dr = DataRequest(log=log, base_url=cfg.API_URL)
     log.info(f"Object class DataRequest print = {dr}")
 
@@ -302,7 +306,8 @@ if __name__ == "__main__":
 |-------|--------|---------|
 | `ScheduleParams` | `start_date`, `end_date`, `start_time`, `end_time`, `interval_seconds` | Measurement schedule for a campaign. |
 | `ConfigParams` | `rbw`, `span`, `antenna`, `lna_gain`, `vga_gain`, `antenna_amp`, `center_freq_hz`, `sample_rate_hz`, `centerFrequency` | SDR hardware configuration for a campaign. |
-| `CampaignParams` | `name`, `schedule` (ScheduleParams), `config` (ConfigParams) | Combined campaign metadata. |
+| `RealtimeSignal` | `mac`, `active_configuration`, `pxx`, `start_freq_hz`, `end_freq_hz` | One realtime PSD snapshot for a node. |
+| `CampaignParams` | `name`, `schedule` (ScheduleParams), `config` (ConfigParams), `pxx_len` | Combined campaign metadata and derived FFT length. |
 
 #### `DataRequest` class
 
@@ -310,7 +315,7 @@ if __name__ == "__main__":
 |--------|----------|---------|-------------|
 | `get_realtime_signal(node_id)` | `GET /campaigns/sensor/{MAC}/realtime` | `RealtimeSignal` | Fetches the latest power spectrum (`pxx`) and frequency range for a sensor node. |
 | `get_campaign_params(campaign_id)` | `GET /campaigns/{id}/parameters` | `CampaignParams` | Returns the schedule and SDR config for a campaign. |
-| `get_api_signals(mac, camp_id)` | `GET /campaigns/sensor/{MAC}/signals` | `list[dict]` | Downloads **all** signal measurements for a sensor/campaign, handling pagination automatically (page size 5000). |
+| `get_api_signals(mac, camp_id, node_desc)` | `GET /campaigns/sensor/{MAC}/signals` | `list[dict]` | Downloads **all** signal measurements for a sensor/campaign, handling pagination automatically (page size 1000). |
 | `load_campaigns_and_nodes(campaigns, node_ids)` | *(wraps `get_api_signals`)* | `dict[str, dict[str, DataFrame]]` | Bulk-loads signals for multiple campaigns × nodes. Returns a nested dict: `{ campaign_label: { "NodeN": DataFrame } }`. |
 
 **Node mapping** — the constructor defines a dictionary mapping node IDs (1–10) to their MAC addresses:
@@ -322,64 +327,149 @@ self.node_macs = {
 }
 ```
 
+### `src/libs/analyzers.py` – Signal analysis helper
+
+`SignalStabilityAnalyzer` provides reusable analysis routines for campaign data
+already loaded in pandas DataFrames (with a `pxx` column):
+
+* Parses PSD vectors from arrays/lists/serialized strings.
+* Builds per-node and global histogram densities.
+* Computes correlation and mutual-information based ranking metrics.
+* Produces summary data structures that can be plotted or exported.
+
+Typical usage pattern:
+
+```python
+from libs.analyzers import SignalStabilityAnalyzer
+
+an = SignalStabilityAnalyzer(datos_nodos=node_dataframe_dict)
+an.parse_data()
+scores = an.get_correlation_scores()
+```
+
 ---
 
 ## Developing New Libraries
 
-All reusable modules live under **`src/libs/`**. To add a new library:
+All reusable modules live under **`src/libs/`**. For portability and testability,
+follow the same style as `analyzers.py`: keep modules **pure** (no environment
+loading, no global logger setup, no import-time side effects).
 
-### 1. Create the module
+### 1. Create the module file
+
+Linux/macOS:
 
 ```bash
 touch src/libs/my_module.py
 ```
 
-### 2. Import configuration and logging
+Windows PowerShell:
+
+```powershell
+New-Item -ItemType File -Path src\libs\my_module.py -Force
+```
+
+### 2. Implement it in analyzers-style (pure library code)
 
 ```python
 # src/libs/my_module.py
-import cfg
+from __future__ import annotations
+from dataclasses import dataclass
+import pandas as pd
 
-log = cfg.set_logger()
+@dataclass
+class CampaignSummary:
+    campaign_name: str
+    rows: int
 
 class MyProcessor:
-    def __init__(self):
-        log.info("MyProcessor initialised")
-        self.api_url = cfg.API_URL
-        # ...
+    """Pure helper class that transforms DataFrame inputs.
+
+    No cfg imports, no logger initialization, and no API calls at import-time.
+    """
+
+    def summarize(self, campaign_name: str, df: pd.DataFrame) -> CampaignSummary:
+        return CampaignSummary(campaign_name=campaign_name, rows=len(df))
 ```
 
-### 3. Use it from `main.py` or a notebook
+If your module needs API access, inject a `DataRequest` instance from the caller
+instead of creating it internally with `cfg`:
 
 ```python
-# src/main.py
-from libs.my_module import MyProcessor
+# src/libs/my_module.py
+from libs.data_request import DataRequest
+
+class MyApiProcessor:
+    def __init__(self, data_request: DataRequest):
+        self.dr = data_request
+
+    def fetch_campaign_name(self, campaign_id: int) -> str:
+        """Return campaign name by ID using injected client."""
+        return self.dr.get_campaign_params(campaign_id).name
+```
+
+### 3. (Optional) Re-export from package root
+
+If you want shorter imports, expose your symbol in `src/libs/__init__.py`:
+
+```python
+from .my_module import MyProcessor
+```
+
+Then import with:
+
+```python
+from libs import MyProcessor
+```
+
+### 4. Wire dependencies in `main.py` or a notebook
+
+```python
+import cfg
+from libs.my_module import MyApiProcessor, MyProcessor
+from libs.data_request import DataRequest
+
+log = cfg.set_logger()
+dr = DataRequest(log=log, base_url=cfg.API_URL)
+
+api_proc = MyApiProcessor(data_request=dr)
+log.info(api_proc.fetch_campaign_name(176))
 
 proc = MyProcessor()
 ```
 
-### 4. Guidelines
+### 5. Checklist for new modules
 
-* **Always import `cfg` first** in every module that needs configuration or logging – it ensures `.env` is loaded before any other code runs.
-* Keep your module in `src/libs/` so that Sphinx autodoc can discover it.
-* Use the existing `DataRequest` class to interact with the API; extend it or compose it rather than duplicating HTTP logic.
-* Follow the existing pattern of dataclasses (`ScheduleParams`, `ConfigParams`, `CampaignParams`) to define structured objects for new API responses.
-* Add docstrings to your functions and classes – Sphinx with the Napoleon extension supports both Google and NumPy docstring styles.
+* Do not import `cfg` inside `src/libs/*` unless absolutely required.
+* Keep `cfg` usage in app entry points (`main.py`, notebooks, CLI scripts).
+* Keep network requests centralized in `DataRequest`.
+* Reuse `SignalStabilityAnalyzer` for PSD ranking/metrics instead of rewriting statistics.
+* Use type hints and docstrings (Google or NumPy style) so Sphinx can generate useful API docs.
+* If the module introduces a public class/function, add usage examples in a notebook or in docs.
 
 ---
 
 ## Jupyter Notebook Examples
 
-Two notebooks in `src/` demonstrate typical workflows:
+The `src/` folder currently includes six notebooks:
 
-### `example-realtime.ipynb` – Real-time Signal Monitoring
+* `example-node-realtime.ipynb` – quick realtime API usage.
+* `example-params-campaign.ipynb` – campaign metadata and `pxx_len` inspection.
+* `one-campaign-analysis.ipynb` – single campaign analysis workflow.
+* `multiple-campaign-analysis.ipynb` – multi-campaign comparison workflow.
+* `plot-one-node.ipynb` – focused visualization for one node.
+* `plot-each-node.ipynb` – per-node plotting across the full set.
+
+Two representative examples are:
+
+### `example-node-realtime.ipynb` – Real-time Signal Monitoring
 
 * Creates a `DataRequest` instance.
 * Polls `get_realtime_signal()` in a loop.
 * Plots the power spectrum only when new data arrives (avoids redundant redraws).
 * Useful for monitoring a single sensor node in real time.
 
-### `example-campaign_nodes.ipynb` – Campaign Data Analysis
+### `multiple-campaign-analysis.ipynb` – Campaign Data Analysis
 
 * Defines a set of campaign IDs that represent different SDR configurations:
 

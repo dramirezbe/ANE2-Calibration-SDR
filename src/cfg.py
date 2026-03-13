@@ -15,6 +15,16 @@ SRC_DIR = pathlib.Path(__file__).resolve().parent
 ROOT_DIR = SRC_DIR.parent 
 
 def ensure_env_file() -> None:
+    """Ensure a ``.env`` file exists in the project root directory.
+
+    Checks for a ``.env`` file at ``ROOT_DIR``.  If it is missing, the
+    function attempts to copy ``.env.example`` to ``.env`` automatically.
+    If neither file is present a warning is printed to stdout.
+
+    This function is called once at module import time so that all
+    subsequent :func:`os.getenv` calls can rely on the environment being
+    populated.
+    """
     env_path = ROOT_DIR / ".env"
     env_example_path = ROOT_DIR / ".env.example"
     
@@ -42,13 +52,55 @@ APP_VERSION = os.getenv("APP_VERSION", "0.1.0")
 # ==========================================
 
 class SimpleFormatter(logging.Formatter):
+    """A :class:`logging.Formatter` subclass with fixed-width level names.
+
+    Pads the ``levelname`` field to nine characters so that log lines from
+    different levels remain visually aligned.  Exception records receive the
+    custom label ``EXCEPTION`` instead of ``ERROR`` to make them easier to
+    spot in the console output.
+    """
+
     def format(self, record: logging.LogRecord) -> str:
+        """Format *record* with a fixed-width, human-readable level name.
+
+        Parameters
+        ----------
+        record : logging.LogRecord
+            The log record to format.
+
+        Returns
+        -------
+        str
+            The formatted log string produced by the parent formatter after
+            the level name has been normalised.
+        """
         if record.exc_info: 
             record.levelname = "EXCEPTION"
         record.levelname = f"{record.levelname:<9}"
         return super().format(record)
 
 def set_logger() -> logging.Logger:
+    """Create and configure the application-wide logger.
+
+    The logger name is derived from the calling script's filename stem
+    (upper-cased), falling back to ``"APP"`` when that cannot be determined.
+
+    Console output level is determined by the environment flags loaded
+    earlier in this module:
+
+    * ``DEBUG=true``   → :data:`logging.DEBUG` (all messages).
+    * ``VERBOSE=true`` → :data:`logging.INFO` (informational and above).
+    * Otherwise        → :data:`logging.ERROR` (errors and exceptions only).
+
+    A :class:`logging.StreamHandler` pointing to ``stdout`` is attached only
+    if no ``StreamHandler`` already exists on the logger, preventing
+    duplicate handlers when the module is reloaded.
+
+    Returns
+    -------
+    logging.Logger
+        Configured logger instance ready for use throughout the application.
+    """
     try: 
         name = pathlib.Path(sys.argv[0]).stem.upper()
     except Exception: 
