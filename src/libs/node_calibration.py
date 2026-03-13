@@ -1,21 +1,19 @@
 """Node-calibration integration for the SDRSystemCalibration fork.
 
-This module adapts the reusable calibration model from the sibling
-``MeasurementCalibration`` repository to the current SDR fork without changing
-that repository. The integration keeps the same architectural split as the
-source model:
+This module keeps the calibration runtime fully self-contained inside the SDR
+fork. The architectural boundary is explicit:
 
 - network access remains in :mod:`libs.data_request`;
-- filesystem persistence for imported SDR campaign data is explicit here;
-- the imported calibration model owns training, artifact loading, and
+- optional campaign materialization remains local to this module;
+- the vendored ``measurement_calibration`` package owns artifact loading and
   deployment-time calibration mathematics.
 
-The public facade exposed here is intentionally thin. Callers can:
+The public facade exposed here intentionally covers only deployment-oriented
+workflows:
 
 1. load and calibrate campaign data returned by ``DataRequest``;
-2. materialize those campaign frames into the on-disk schema expected by the
-   calibration model; and
-3. fit a new model from the materialized campaign corpus when needed.
+2. calibrate one in-memory real-time PSD observation; and
+3. materialize SDR campaign frames into the CSV schema expected by the model.
 """
 
 from __future__ import annotations
@@ -29,7 +27,6 @@ import importlib
 import json
 import os
 from pathlib import Path
-import sys
 from typing import Any, Protocol
 
 import numpy as np
@@ -40,7 +37,6 @@ FloatArray = np.ndarray
 
 _DEFAULT_MODEL_DIRNAME = Path("models") / "stable"
 _DEFAULT_CAMPAIGNS_DIRNAME = Path("data") / "campaigns"
-_MEASUREMENT_REPO_ENV = "MEASUREMENT_CALIBRATION_ROOT"
 _CALIBRATION_MODEL_ENV = "CALIBRATION_MODEL_DIR"
 _ALLOW_FREQUENCY_EXTRAPOLATION_ENV = "CALIBRATION_ALLOW_FREQUENCY_EXTRAPOLATION"
 _ALLOW_CONFIGURATION_OOD_ENV = "CALIBRATION_ALLOW_CONFIGURATION_OOD"
@@ -81,11 +77,6 @@ class CalibrationServiceConfig:
 
     Parameters
     ----------
-    measurement_calibration_root:
-        Optional repository root used only when the fork does not already
-        vendor ``measurement_calibration`` under ``src/``. When ``None``, the
-        service first tries the local vendored package and only then falls
-        back to ``MEASUREMENT_CALIBRATION_ROOT`` if it was provided.
     model_dir:
         Directory that contains the calibration artifact bundle used for
         deployment-time evaluation. When ``None``, the service first checks
@@ -107,7 +98,6 @@ class CalibrationServiceConfig:
         frames.
     """
 
-    measurement_calibration_root: Path | None = None
     model_dir: Path | None = None
     allow_frequency_extrapolation: bool = False
     allow_configuration_ood: bool = True
@@ -119,10 +109,8 @@ class CalibrationServiceConfig:
     def from_environment(cls) -> CalibrationServiceConfig:
         """Build one integration config from environment variables."""
 
-        measurement_root = _path_from_env(_MEASUREMENT_REPO_ENV)
         model_dir = _path_from_env(_CALIBRATION_MODEL_ENV)
         return cls(
-            measurement_calibration_root=measurement_root,
             model_dir=model_dir,
             allow_frequency_extrapolation=_bool_from_env(
                 _ALLOW_FREQUENCY_EXTRAPOLATION_ENV,
@@ -133,13 +121,6 @@ class CalibrationServiceConfig:
                 default=True,
             ),
         )
-
-    def resolved_measurement_calibration_root(self) -> Path | None:
-        """Return the optional external repository root used for imports."""
-
-        if self.measurement_calibration_root is None:
-            return None
-        return Path(self.measurement_calibration_root).resolve()
 
     def resolved_model_dir(self) -> Path:
         """Return the artifact directory used for deployment inference."""
@@ -255,30 +236,14 @@ class MaterializedCampaignResult:
 
 
 @dataclass(frozen=True)
-class ModelFitResult:
-    """Result of fitting one materialized corpus through the imported model."""
-
-    output_dir: Path
-    manifest_path: Path
-    parameters_path: Path
-    sensor_summary_path: Path
-    fit_duration_s: float
-
-
-@dataclass(frozen=True)
 class _MeasurementCalibrationBindings:
-    """Imported public API surface from the sibling model repository."""
+    """Imported inference-only API surface from the vendored model package."""
 
     campaign_configuration_type: Any
-    frequency_basis_config_type: Any
-    persistent_model_config_type: Any
-    two_level_fit_config_type: Any
     calibrate_sensor_observations: Any
-    fit_and_save_calibration_corpus_model: Any
     load_two_level_calibration_artifact: Any
     power_db_to_linear: Any
     power_linear_to_db: Any
-    prepare_calibration_corpus: Any
 
 
 def configuration_from_campaign_params(
@@ -323,15 +288,13 @@ def configuration_from_campaign_params(
 
 
 class NodeCalibrationService:
-    """Facade that adapts ``DataRequest`` payloads to the imported model.
+    """Facade that adapts ``DataRequest`` payloads to the vendored model.
 
     Side Effects
     ------------
-    - Imports the sibling ``MeasurementCalibration`` repository by extending
-      ``sys.path`` when needed.
+    - Imports the vendored ``measurement_calibration`` package from this fork.
     - Reads the selected calibration artifact from disk.
-    - Optional training/materialization helpers write campaign data and model
-      artifacts to disk.
+    - Optional materialization helpers write campaign data to disk.
     """
 
     def __init__(
@@ -345,9 +308,7 @@ class NodeCalibrationService:
             if config is None
             else config
         )
-        self._bindings = _load_measurement_calibration_bindings(
-            self.config.resolved_measurement_calibration_root()
-        )
+        self._bindings = _load_measurement_calibration_bindings()
         self._artifact = None
 
     @property
@@ -581,87 +542,6 @@ class NodeCalibrationService:
             )
         return materialized
 
-    def fit_materialized_campaigns(
-        self,
-        campaign_labels: Sequence[str],
-        campaigns_root: Path,
-        output_dir: Path,
-        *,
-        excluded_sensor_ids_by_campaign: Mapping[str, Sequence[str]] | None = None,
-        basis_config: Mapping[str, Any] | None = None,
-        model_config: Mapping[str, Any] | None = None,
-        fit_config: Mapping[str, Any] | None = None,
-        sensor_reference_weight_by_id: Mapping[str, float] | None = None,
-        workflow_config_dir: Path | None = None,
-    ) -> ModelFitResult:
-        """Fit one model from materialized campaigns already on disk."""
-
-        prepared_corpus = self._bindings.prepare_calibration_corpus(
-            campaign_labels=tuple(str(label) for label in campaign_labels),
-            campaigns_root=Path(campaigns_root),
-            excluded_sensor_ids_by_campaign=excluded_sensor_ids_by_campaign,
-        )
-        fit_result = self._bindings.fit_and_save_calibration_corpus_model(
-            preparation=prepared_corpus,
-            output_dir=Path(output_dir),
-            basis_config=_instantiate_optional_config(
-                self._bindings.frequency_basis_config_type,
-                basis_config,
-            ),
-            model_config=_instantiate_optional_config(
-                self._bindings.persistent_model_config_type,
-                model_config,
-            ),
-            fit_config=_instantiate_optional_config(
-                self._bindings.two_level_fit_config_type,
-                fit_config,
-            ),
-            sensor_reference_weight_by_id=sensor_reference_weight_by_id,
-            workflow_config_dir=workflow_config_dir,
-        )
-        return ModelFitResult(
-            output_dir=Path(fit_result.artifact.output_dir),
-            manifest_path=Path(fit_result.artifact.manifest_path),
-            parameters_path=Path(fit_result.artifact.parameters_path),
-            sensor_summary_path=Path(fit_result.artifact.sensor_summary_path),
-            fit_duration_s=float(fit_result.fit_duration_s),
-        )
-
-    def fit_loaded_campaigns(
-        self,
-        data_request: DataRequestLike,
-        campaigns: Mapping[str, int],
-        node_ids: Sequence[int],
-        campaigns_root: Path,
-        output_dir: Path,
-        *,
-        excluded_sensor_ids_by_campaign: Mapping[str, Sequence[str]] | None = None,
-        basis_config: Mapping[str, Any] | None = None,
-        model_config: Mapping[str, Any] | None = None,
-        fit_config: Mapping[str, Any] | None = None,
-        sensor_reference_weight_by_id: Mapping[str, float] | None = None,
-        workflow_config_dir: Path | None = None,
-    ) -> ModelFitResult:
-        """Fetch, materialize, and fit a model from the SDR fork contracts."""
-
-        self.materialize_loaded_campaigns(
-            data_request=data_request,
-            campaigns=campaigns,
-            node_ids=node_ids,
-            output_root=campaigns_root,
-        )
-        return self.fit_materialized_campaigns(
-            campaign_labels=tuple(campaigns),
-            campaigns_root=campaigns_root,
-            output_dir=output_dir,
-            excluded_sensor_ids_by_campaign=excluded_sensor_ids_by_campaign,
-            basis_config=basis_config,
-            model_config=model_config,
-            fit_config=fit_config,
-            sensor_reference_weight_by_id=sensor_reference_weight_by_id,
-            workflow_config_dir=workflow_config_dir,
-        )
-
     def _build_model_configuration(
         self,
         configuration: CampaignConfigurationSnapshot,
@@ -704,56 +584,36 @@ def _resolve_sdr_repo_root() -> Path:
 
 @lru_cache(maxsize=None)
 def _load_measurement_calibration_bindings(
-    measurement_calibration_root: Path | None,
 ) -> _MeasurementCalibrationBindings:
-    """Import the vendored model package or an explicit external fallback."""
+    """Import the vendored inference modules from the SDR fork only."""
 
     try:
-        module = importlib.import_module("measurement_calibration")
-    except ModuleNotFoundError:
-        module = None
-
-    if module is None:
-        if measurement_calibration_root is None:
-            raise CalibrationIntegrationError(
-                "Could not import the vendored measurement_calibration package "
-                "from the SDR fork. Either keep src/measurement_calibration in "
-                "the fork or set MEASUREMENT_CALIBRATION_ROOT."
-            )
-        repo_root = Path(measurement_calibration_root).resolve()
-        if not repo_root.exists():
-            raise CalibrationIntegrationError(
-                "MeasurementCalibration repository root does not exist: "
-                f"{repo_root}"
-            )
-        if str(repo_root) not in sys.path:
-            sys.path.insert(0, str(repo_root))
-
-        try:
-            module = importlib.import_module("measurement_calibration")
-        except ModuleNotFoundError as error:
-            raise CalibrationIntegrationError(
-                "Could not import measurement_calibration from "
-                f"{repo_root}. Check MEASUREMENT_CALIBRATION_ROOT."
-            ) from error
+        spectral_module = importlib.import_module(
+            "measurement_calibration.spectral_calibration"
+        )
+        artifacts_module = importlib.import_module("measurement_calibration.artifacts")
+    except ModuleNotFoundError as error:
+        raise CalibrationIntegrationError(
+            "Could not import the vendored measurement_calibration package from "
+            "the SDR fork. Keep src/measurement_calibration available inside "
+            "SDRSystemCalibration."
+        ) from error
 
     return _MeasurementCalibrationBindings(
-        campaign_configuration_type=getattr(module, "CampaignConfiguration"),
-        frequency_basis_config_type=getattr(module, "FrequencyBasisConfig"),
-        persistent_model_config_type=getattr(module, "PersistentModelConfig"),
-        two_level_fit_config_type=getattr(module, "TwoLevelFitConfig"),
-        calibrate_sensor_observations=getattr(module, "calibrate_sensor_observations"),
-        fit_and_save_calibration_corpus_model=getattr(
-            module,
-            "fit_and_save_calibration_corpus_model",
+        campaign_configuration_type=getattr(
+            spectral_module,
+            "CampaignConfiguration",
         ),
         load_two_level_calibration_artifact=getattr(
-            module,
+            artifacts_module,
             "load_two_level_calibration_artifact",
         ),
-        power_db_to_linear=getattr(module, "power_db_to_linear"),
-        power_linear_to_db=getattr(module, "power_linear_to_db"),
-        prepare_calibration_corpus=getattr(module, "prepare_calibration_corpus"),
+        calibrate_sensor_observations=getattr(
+            spectral_module,
+            "calibrate_sensor_observations",
+        ),
+        power_db_to_linear=getattr(spectral_module, "power_db_to_linear"),
+        power_linear_to_db=getattr(spectral_module, "power_linear_to_db"),
     )
 
 
@@ -970,17 +830,6 @@ def _build_metadata_row(
     }
 
 
-def _instantiate_optional_config(
-    config_type: Any,
-    config_values: Mapping[str, Any] | None,
-) -> Any | None:
-    """Instantiate one imported config dataclass from mapping values."""
-
-    if config_values is None:
-        return None
-    return config_type(**dict(config_values))
-
-
 __all__ = [
     "CalibratedCampaignResult",
     "CalibratedSensorResult",
@@ -989,7 +838,6 @@ __all__ = [
     "CalibrationTrustSummary",
     "CampaignConfigurationSnapshot",
     "MaterializedCampaignResult",
-    "ModelFitResult",
     "NodeCalibrationService",
     "configuration_from_campaign_params",
 ]

@@ -1,10 +1,15 @@
-"""Integration tests for the SDR-side node-calibration facade."""
+"""Integration tests for the SDR-side node-calibration facade.
+
+The test fixtures are intentionally synthetic so the SDR fork remains fully
+self-contained. The deployed artifact is loaded from ``models/stable`` inside
+the fork, while PSD observations are generated in-memory with deterministic
+frequency bounds that lie inside the artifact support.
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-import json
 
 import numpy as np
 import pandas as pd
@@ -18,65 +23,72 @@ from libs.node_calibration import (
 
 
 SDR_REPO_ROOT = Path(__file__).resolve().parents[1]
-MEASUREMENT_REPO_ROOT = (
-    Path(__file__).resolve().parents[2] / "MeasurementCalibration"
-).resolve()
-TEST_CAMPAIGN_DIR = MEASUREMENT_REPO_ROOT / "data" / "campaigns" / "test-calibration"
 LOCAL_MODEL_DIR = SDR_REPO_ROOT / "models" / "stable"
 
 
-def _parse_bool(value: object) -> bool:
-    """Return a stable boolean from CSV metadata values."""
-
-    if isinstance(value, bool):
-        return value
-    normalized = str(value).strip().lower()
-    if normalized in {"1", "true", "yes", "on"}:
-        return True
-    if normalized in {"0", "false", "no", "off"}:
-        return False
-    raise ValueError(f"Cannot interpret {value!r} as boolean")
-
-
 def _build_campaign_params() -> CampaignParams:
-    """Return one ``CampaignParams`` instance from the checked-in metadata CSV."""
+    """Return one stable ``CampaignParams`` instance within artifact support."""
 
-    metadata_frame = pd.read_csv(TEST_CAMPAIGN_DIR / "metadata.csv")
-    metadata_row = metadata_frame.iloc[0]
-    acquisition_interval_s = int(float(metadata_row["acquisition_freq_minutes"]) * 60.0)
     return CampaignParams(
-        name=str(metadata_row["campaign_label"]),
+        name="synthetic-calibration",
         schedule=ScheduleParams(
-            start_date=str(metadata_row["start_date"]),
-            end_date=str(metadata_row["stop_date"]),
-            start_time=str(metadata_row["start_time"]),
-            end_time=str(metadata_row["stop_time"]),
-            interval_seconds=acquisition_interval_s,
+            start_date="2025-02-24T00:00:00.000Z",
+            end_date="2025-02-24T00:00:00.000Z",
+            start_time="10:30:00",
+            end_time="14:00:00",
+            interval_seconds=120,
         ),
         config=ConfigParams(
-            rbw=str(float(metadata_row["rbw_kHz"]) * 1.0e3),
-            span=int(float(metadata_row["span_MHz"]) * 1.0e6),
+            rbw="10000",
+            span=20_000_000,
             antenna="unknown",
-            lna_gain=int(metadata_row["lna_gain_dB"]),
-            vga_gain=int(metadata_row["vga_gain_dB"]),
-            antenna_amp=_parse_bool(metadata_row["antenna_amp"]),
-            center_freq_hz=int(float(metadata_row["central_freq_MHz"]) * 1.0e6),
-            sample_rate_hz=int(metadata_row["sample_rate_hz"]),
-            centerFrequency=int(float(metadata_row["central_freq_MHz"]) * 1.0e6),
+            lna_gain=40,
+            vga_gain=62,
+            antenna_amp=True,
+            center_freq_hz=98_000_000,
+            sample_rate_hz=20_000_000,
+            centerFrequency=98_000_000,
         ),
-        pxx_len=4096,
+        pxx_len=16,
     )
 
 
 def _load_campaign_frames() -> dict[str, pd.DataFrame]:
-    """Load a compact subset of the checked-in test campaign as DataFrames."""
+    """Build deterministic synthetic PSD frames for four sensors."""
 
-    sensor_ids = ("Node1", "Node2", "Node3", "Node10")
+    frequency_bin_count = 16
+    base_spectrum_db = np.linspace(-120.0, -80.0, frequency_bin_count, dtype=np.float64)
+    sensor_offsets_db = {
+        "Node1": 0.0,
+        "Node2": 1.5,
+        "Node3": -2.0,
+        "Node10": 3.0,
+    }
+
     frames: dict[str, pd.DataFrame] = {}
-    for sensor_id in sensor_ids:
-        frame = pd.read_csv(TEST_CAMPAIGN_DIR / f"{sensor_id}.csv").head(2).copy()
-        frame["pxx"] = frame["pxx"].apply(json.loads)
-        frames[sensor_id] = frame
+    for sensor_id, offset_db in sensor_offsets_db.items():
+        first_row = (base_spectrum_db + offset_db).tolist()
+        second_row = (base_spectrum_db + offset_db + 0.25).tolist()
+        frames[sensor_id] = pd.DataFrame(
+            [
+                {
+                    "id": 1,
+                    "mac": "00:11:22:33:44:55",
+                    "campaign_id": 205,
+                    "pxx": first_row,
+                    "start_freq_hz": 97_000_000.0,
+                    "end_freq_hz": 99_000_000.0,
+                },
+                {
+                    "id": 2,
+                    "mac": "00:11:22:33:44:55",
+                    "campaign_id": 205,
+                    "pxx": second_row,
+                    "start_freq_hz": 97_000_000.0,
+                    "end_freq_hz": 99_000_000.0,
+                },
+            ]
+        )
     return frames
 
 
@@ -146,7 +158,7 @@ def test_calibrate_loaded_campaigns_uses_data_request_contract() -> None:
     assert node1_result.calibrated_frame.shape[0] == 2
     assert "calibrated_pxx" in node1_result.calibrated_frame.columns
     assert "calibrated_variance_power2" in node1_result.calibrated_frame.columns
-    assert len(node1_result.calibrated_frame["calibrated_pxx"].iloc[0]) == 4096
+    assert len(node1_result.calibrated_frame["calibrated_pxx"].iloc[0]) == 16
     assert np.all(np.isfinite(node1_result.calibrated_power_db))
     assert node1_result.trust_summary.frequency_extrapolation_detected is False
 
