@@ -385,33 +385,53 @@ class DataRequest:
         self._log.info("Finished loading data for all campaigns and nodes.")
         return df_full
 
+@dataclass
+class IQParams:
+    center_freq: int
+    sample_rate: int
+    lna: int
+    vga: int
+    amp_enabled: bool
 
-# ---------------------------------------------------------------------------
-# Example usage when run as a script / tutorial
-# ---------------------------------------------------------------------------
-if __name__ == "__main__":
-    # This block can also serve as an executable tutorial in a notebook cell
-    import cfg
+class SigMFRepo:
+    def __init__(self, cache_dir="dataset_cache"):
+        self.base_url = "https://raw.githubusercontent.com/dramirezbe/DataBase-IQ-FM-88MHz-108MHz/main/"
+        tree_url = "https://api.github.com/repos/dramirezbe/DataBase-IQ-FM-88MHz-108MHz/git/trees/main?recursive=1"
+        self.tree = requests.get(tree_url).json().get("tree", [])
+        self.cache = dc.Cache(cache_dir)
 
-    log = cfg.set_logger()
-    dr = DataRequest(log=log, base_url=cfg.API_URL)
+    def get_iq_data(self, numbers):
+        prefixes = [f"{n:02d}" for n in numbers]
+        all_files = [f["path"] for f in self.tree]
+        iqs, metas = [], []
 
-    # 1. inspect a campaign
-    print("\n== Campaign metadata example ==")
-    campaign_id = 176
-    info = dr.get_campaign_params(campaign_id)
-    log.info(f"Campaign name: {info.name}")
-    log.info(f"Computed pxx_len: {info.pxx_len}")
+        for p in prefixes:
+            meta_key, iq_key = f"meta_{p}", f"iq_{p}"
 
-    # 2. load signals for all nodes in a campaign (uses caching)
-    print("\n== Bulk download example ==")
-    camps = {"FM original": campaign_id}
-    nodes = list(range(1, 11))
-    df_data = dr.load_campaigns_and_nodes(camps, nodes)
-    for camp_label, nodes_dict in df_data.items():
-        log.info(f"Campaign {camp_label} has data for nodes: {list(nodes_dict.keys())}")
-
-    # 3. realtime snapshot for node 1
-    print("\n== Realtime signal example ==")
-    realtime = dr.get_realtime_signal(1)
-    log.info(f"Realtime PSD length: {len(realtime.pxx)}")
+            if meta_key in self.cache and iq_key in self.cache:
+                meta = self.cache[meta_key]
+                raw_int = self.cache[iq_key]
+            else:
+                meta_file = [f for f in all_files if f.startswith(p) and f.endswith(".sigmf-meta")][0]
+                data_file = meta_file.replace(".sigmf-meta", ".sigmf-data")
+                
+                meta = requests.get(self.base_url + meta_file).json()
+                raw_data = requests.get(self.base_url + data_file).content
+                raw_int = np.frombuffer(raw_data, dtype=np.int8)
+                
+                self.cache[meta_key] = meta
+                self.cache[iq_key] = raw_int
+            
+            # Map dictionary to dataclass
+            params = IQParams(
+                center_freq=meta["captures"][0]["core:frequency"],
+                sample_rate=meta["global"]["core:sample_rate"],
+                lna=meta["global"]["hackrf:lna_gain_db"],
+                vga=meta["global"]["hackrf:vga_gain_db"],
+                amp_enabled=meta["global"]["hackrf:amp_enabled"]
+            )
+            
+            metas.append(params)
+            iqs.append(raw_int)
+        
+        return iqs, metas
