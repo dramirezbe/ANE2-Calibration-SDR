@@ -1,0 +1,45 @@
+\documentclass{article}
+\usepackage{amsmath}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+
+\begin{document}
+
+\begin{algorithm}
+\caption{FM Carrier Frequency Compliance Assessment Methodology}
+\label{alg:fm_compliance}
+\begin{algorithmic}[1]
+\Require Baseband I/Q samples $S_{BB}[n]$ spanning $88 \text{ MHz to } 108 \text{ MHz}$
+\Ensure Compliance status $C$ for an assigned channel $f_c$
+\State \textbf{Define} channel spacing $\Delta f_{ch} \gets 200 \text{ kHz}$
+\State \textbf{Define} valid channels $F_{ITU} \gets \{88.1, 88.3, \dots, 107.9\} \text{ MHz}$
+\State \textbf{Define} regulatory tolerance $\epsilon \gets (0.5 + 2 \times 10^{-5}) \text{ kHz}$
+
+\ForAll{$f_c \in F_{ITU}$}
+    \State \textit{// Stage 1 \& 2: Signal Acquisition and Channelization}
+    \State $S_{ch}[n] \gets \text{ApplyBandpassFilter}(S_{BB}[n], f_c, \Delta f_{ch})$
+    
+    \State \textit{// Stage 3: Center Frequency Estimation (DSP)}
+    \State $W[n] \gets S_{ch}[n] \times \text{BlackmanWindow}(n)$ \Comment{Reduce spectral leakage}
+    \State $X[k] \gets \text{FFT}(W[n], N_{FFT})$ \Comment{Transform to frequency domain}
+    \State $P[k] \gets |X[k]|^2$ \Comment{Compute Power Spectral Density}
+    \State $k_{max} \gets \arg\max_k (P[k])$ \Comment{Find discrete peak bin}
+    \State $\delta_k \gets \frac{1}{2} \frac{P[k_{max}-1] - P[k_{max}+1]}{P[k_{max}-1] - 2P[k_{max}] + P[k_{max}+1]}$ \Comment{Sub-bin parabolic interpolation}
+    \State $\hat{f}_{c} \gets \left(k_{max} + \delta_k\right) \times \frac{F_s}{N_{FFT}} + f_{offset}$ \Comment{Compute exact center frequency}
+    
+    \State \textit{// Stage 4: Absolute Error Calculation}
+    \State $\Delta f \gets |\hat{f}_{c} - f_c|$
+    
+    \State \textit{// Stage 5: Normativity Assurance Check}
+    \If{$\Delta f \leq \epsilon$}
+        \State $C \gets \text{True}$ \Comment{Emission is Compliant}
+    \Else
+        \State $C \gets \text{False}$ \Comment{Emission is Non-Compliant}
+    \EndIf
+    
+    \State \textbf{Log} evidence $(f_c, \hat{f}_{c}, \Delta f, C)$ for reporting
+\EndFor
+\end{algorithmic}
+\end{algorithm}
+
+\end{document}

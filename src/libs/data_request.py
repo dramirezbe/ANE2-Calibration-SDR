@@ -406,12 +406,15 @@ class SigMFRepo:
         iqs, metas = [], []
 
         for p in prefixes:
+            #print(f"Processing IQ {p}...")
             meta_key, iq_key = f"meta_{p}", f"iq_{p}"
 
             if meta_key in self.cache and iq_key in self.cache:
+                print(f"  ↳ IQ {p} loaded instantly from local cache")
                 meta = self.cache[meta_key]
                 raw_int = self.cache[iq_key]
             else:
+                print(f"  ↳ Downloading IQ {p} from GitHub...")
                 meta_file = [f for f in all_files if f.startswith(p) and f.endswith(".sigmf-meta")][0]
                 data_file = meta_file.replace(".sigmf-meta", ".sigmf-data")
                 
